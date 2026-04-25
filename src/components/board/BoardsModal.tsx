@@ -51,10 +51,10 @@ export default function BoardsModal({ open, boards, currentBoardId, onClose, onS
           {boards.map(b => (
             <div key={b.id} style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-              padding: '10px 12px', background: 'var(--bg3)',
+              padding: '10px 12px',
+              background: b.id === currentBoardId ? 'rgba(124,106,247,0.1)' : 'var(--bg3)',
               borderRadius: '6px', border: b.id === currentBoardId ? '1px solid var(--accent)' : '1px solid var(--border)',
               cursor: 'pointer', transition: 'all 0.15s',
-              background: b.id === currentBoardId ? 'rgba(124,106,247,0.1)' : 'var(--bg3)',
             }} onClick={() => { onSwitch(b.id); onClose() }}>
               <div>
                 <div style={{ fontSize: '13px', fontWeight: 500 }}>{b.title}</div>
