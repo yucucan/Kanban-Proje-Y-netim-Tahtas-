@@ -77,12 +77,11 @@ export default function CardItem({ card, onEdit, isDragging: isOverlay }: Props)
       {/* Meta */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         {card.assignee_name ? (
-          <div style={{
+          <div title={card.assignee_name} style={{
             width: '20px', height: '20px', borderRadius: '50%',
             background: card.assignee_color || '#7c6af7',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: '9px', fontWeight: 600, color: '#fff',
-            title: card.assignee_name,
           }}>
             {card.assignee_name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)}
           </div>
