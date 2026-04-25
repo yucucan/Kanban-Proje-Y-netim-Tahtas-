@@ -15,9 +15,14 @@ import {
   type DragOverEvent,
   type DragEndEvent,
 } from '@dnd-kit/core'
-import { SortableContext, sortableKeyboardCoordinates, horizontalListSortingStrategy } from '@dnd-kit/sortable'
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  horizontalListSortingStrategy,
+  arrayMove,
+} from '@dnd-kit/sortable'
 import { createClient } from '@/lib/supabase'
-import { Board, Column, Card, calcPosition } from '@/types'
+import { Board, Column, Card } from '@/types'
 import { useMounted } from '@/hooks/useMounted'
 import Topbar from './Topbar'
 import KanbanColumn from './KanbanColumn'
@@ -34,6 +39,14 @@ interface Props {
   currentBoardId: string | null
 }
 
+/** Fractional indexing: A ile B arasına kart ekle */
+function calcPosition(before: number | null, after: number | null): number {
+  if (before === null && after === null) return 1000
+  if (before === null) return (after as number) / 2
+  if (after === null) return before + 1000
+  return (before + after) / 2
+}
+
 export default function KanbanApp({
   user,
   boards: initialBoards,
@@ -43,17 +56,12 @@ export default function KanbanApp({
 }: Props) {
   const router = useRouter()
   const supabase = createClient()
-
-  // useMounted: DndContext yalnızca client-side render edilir.
-  // Next.js Server Components HTML üretirken dnd-kit ID'leri mevcut değildir;
-  // bu hook olmazsa React "hydration mismatch" hatası fırlatır.
   const mounted = useMounted()
 
   const [boards, setBoards] = useState<Board[]>(initialBoards)
   const [columns, setColumns] = useState<Column[]>(initialColumns)
   const [cards, setCards] = useState<Card[]>(initialCards)
   const [currentBoardId, setCurrentBoardId] = useState<string | null>(initBoardId)
-
   const [activeCardId, setActiveCardId] = useState<string | null>(null)
 
   const [cardModal, setCardModal] = useState<{ open: boolean; cardId?: string; columnId?: string }>({ open: false })
@@ -63,13 +71,9 @@ export default function KanbanApp({
 
   const showToast = (msg: string) => {
     setToast(msg)
-    setTimeout(() => setToast(''), 2500)
+    setTimeout(() => setToast(''), 3000)
   }
 
-  // Sensörler:
-  // - PointerSensor: masaüstü; distance:5 yanlışlıkla tıklamayı önler
-  // - TouchSensor: mobil; delay:250 sayfa kaydırma ile çakışmayı önler
-  // - KeyboardSensor: klavye erişilebilirliği (a11y)
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } }),
@@ -82,15 +86,7 @@ export default function KanbanApp({
     }
   }, [cards])
 
-  /**
-   * OPTIMISTIC UI — Sütun geçişi (handleDragOver)
-   *
-   * Kart farklı bir sütuna sürüklendiğinde Supabase'i beklemeden
-   * state'i anında güncelliyoruz. Kullanıcı bırakma gerçekleşmeden
-   * kartın hedef sütunda "oturduğunu" görür — arayüz donmaz.
-   *
-   * Asıl DB kaydı handleDragEnd'de, sürükleme bittikten sonra yapılır.
-   */
+  // Kart farklı sütuna geçerken optimistic UI
   const handleDragOver = useCallback((event: DragOverEvent) => {
     const { active, over } = event
     if (!over) return
@@ -102,73 +98,88 @@ export default function KanbanApp({
     const overColId = overCard?.column_id ?? columns.find(c => c.id === over.id)?.id
     if (!overColId || overColId === activeCard.column_id) return
 
-    // Optimistic: state anında güncellenir, DB beklenmez
     setCards(prev =>
       prev.map(c => c.id === activeCard.id ? { ...c, column_id: overColId } : c)
     )
   }, [cards, columns])
 
-  /**
-   * OPTIMISTIC UI — Pozisyon güncelleme (handleDragEnd)
-   *
-   * Adımlar:
-   * 1. Fractional indexing ile yeni pozisyon hesapla:
-   *    newPos = (öncekiPos + sonrakiPos) / 2
-   * 2. State'i anında güncelle → kullanıcı sonucu hemen görür
-   * 3. Supabase'e sadece 1 kayıt UPDATE → veritabanı maliyeti minimum
-   * 4. Hata varsa önceki state'e rollback → kullanıcıya bilgi ver
-   */
   const handleDragEnd = useCallback(async (event: DragEndEvent) => {
     const { active, over } = event
     setActiveCardId(null)
-    if (!over || active.id === over.id) return
+    if (!over) return
 
     const activeCard = cards.find(c => c.id === active.id)
     const activeCol = columns.find(c => c.id === active.id)
 
     if (activeCard) {
+      // Kartın bulunduğu sütundaki tüm kartları sırala
       const colCards = cards
         .filter(c => c.column_id === activeCard.column_id)
         .sort((a, b) => a.position - b.position)
 
-      const overIdx = colCards.findIndex(c => c.id === over.id)
       const activeIdx = colCards.findIndex(c => c.id === active.id)
-      if (overIdx === -1) return
 
-      const before = overIdx > 0
-        ? colCards[activeIdx < overIdx ? overIdx : overIdx - 1]?.position ?? null
-        : null
-      const after = overIdx < colCards.length - 1
-        ? colCards[activeIdx < overIdx ? overIdx + 1 : overIdx]?.position ?? null
-        : null
-      const newPos = calcPosition(before, after)
+      // over bir kart mı yoksa sütun mu?
+      const overCard = cards.find(c => c.id === over.id)
+      const overIsColumn = !overCard && !!columns.find(c => c.id === over.id)
 
-      // 1. Optimistic state güncellemesi — kullanıcı beklemez
-      const previousCards = cards
+      let newPos: number
+
+      if (overIsColumn) {
+        // Sütunun üzerine bırakıldı: listenin sonuna ekle
+        const lastPos = colCards.length > 0 ? colCards[colCards.length - 1].position : 0
+        newPos = lastPos + 1000
+      } else if (overCard) {
+        // Başka bir kartın üzerine bırakıldı
+        const overIdx = colCards.findIndex(c => c.id === over.id)
+        if (overIdx === -1) return
+
+        // arrayMove ile yeni sırayı hesapla
+        const reordered = arrayMove(colCards, activeIdx, overIdx)
+        const newIdx = reordered.findIndex(c => c.id === active.id)
+
+        const prevPos = newIdx > 0 ? reordered[newIdx - 1].position : null
+        const nextPos = newIdx < reordered.length - 1 ? reordered[newIdx + 1].position : null
+        newPos = calcPosition(prevPos, nextPos)
+      } else {
+        return
+      }
+
+      // Optimistic update
+      const previousCards = [...cards]
       setCards(prev =>
-        prev.map(c => c.id === activeCard.id ? { ...c, position: newPos } : c)
+        prev.map(c => c.id === activeCard.id
+          ? { ...c, position: newPos, column_id: activeCard.column_id }
+          : c
+        )
       )
 
-      // 2. DB'ye arka planda kaydet — sadece 1 kayıt güncellenir
+      // DB'ye kaydet
       const { error } = await supabase
         .from('cards')
         .update({ column_id: activeCard.column_id, position: newPos })
         .eq('id', activeCard.id)
 
-      // 3. Hata varsa rollback
       if (error) {
+        console.error('Card update error:', error)
         setCards(previousCards)
-        showToast('Sıralama kaydedilemedi, tekrar deneyin.')
+        showToast('Kayıt başarısız, tekrar deneyin.')
       }
 
     } else if (activeCol) {
+      // Sütun sıralama
       const sortedCols = [...columns].sort((a, b) => a.position - b.position)
+      const activeIdx = sortedCols.findIndex(c => c.id === active.id)
       const overIdx = sortedCols.findIndex(c => c.id === over.id)
-      const before = overIdx > 0 ? sortedCols[overIdx - 1]?.position ?? null : null
-      const after = sortedCols[overIdx]?.position ?? null
-      const newPos = calcPosition(before, after)
+      if (activeIdx === -1 || overIdx === -1) return
 
-      const previousColumns = columns
+      const reordered = arrayMove(sortedCols, activeIdx, overIdx)
+      const newIdx = reordered.findIndex(c => c.id === active.id)
+      const prevPos = newIdx > 0 ? reordered[newIdx - 1].position : null
+      const nextPos = newIdx < reordered.length - 1 ? reordered[newIdx + 1].position : null
+      const newPos = calcPosition(prevPos, nextPos)
+
+      const previousColumns = [...columns]
       setColumns(prev =>
         prev.map(c => c.id === activeCol.id ? { ...c, position: newPos } : c)
       )
@@ -206,7 +217,6 @@ export default function KanbanApp({
       { board_id: data.id, title: 'Tamamlandı', color: '#3ecf8e', position: 4000 },
     ]
     const { data: colData } = await supabase.from('columns').insert(defaultCols).select()
-
     setBoards(prev => [...prev, data])
     setCurrentBoardId(data.id)
     setColumns(colData || [])
@@ -250,7 +260,6 @@ export default function KanbanApp({
     if (!currentBoardId) return
 
     if (data.id) {
-      // Optimistic update
       setCards(prev => prev.map(c =>
         c.id === data.id
           ? { ...c, title: data.title, description: data.description, tags: data.tags, due_date: data.due_date || null, assignee_name: data.assignee_name || null, assignee_color: data.assignee_color || null }
@@ -304,65 +313,57 @@ export default function KanbanApp({
             Pano Yönet
           </button>
         </div>
-      ) : (
-        /*
-         * useMounted guard: DndContext yalnızca client mount sonrası render edilir.
-         * Server HTML'de dnd-kit ID'leri yoktur → hydration mismatch önlenir.
-         * mounted=false iken statik iskelet gösterilir (layout shift olmaz).
-         */
-        mounted ? (
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCorners}
-            onDragStart={handleDragStart}
-            onDragOver={handleDragOver}
-            onDragEnd={handleDragEnd}
-          >
-            <div style={{ flex: 1, overflowX: 'auto', padding: '1.5rem', display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-              <SortableContext items={sortedColumns.map(c => c.id)} strategy={horizontalListSortingStrategy}>
-                {sortedColumns.map(col => (
-                  <KanbanColumn
-                    key={col.id}
-                    column={col}
-                    cards={cards.filter(c => c.column_id === col.id).sort((a, b) => a.position - b.position)}
-                    onAddCard={() => setCardModal({ open: true, columnId: col.id })}
-                    onEditCard={(cardId) => setCardModal({ open: true, cardId, columnId: col.id })}
-                    onDeleteColumn={() => deleteColumn(col.id)}
-                  />
-                ))}
-              </SortableContext>
-
-              <button
-                onClick={() => setColModal(true)}
-                style={{ flexShrink: 0, width: '280px', padding: '12px', background: 'rgba(255,255,255,0.03)', border: '1px dashed var(--border)', borderRadius: '10px', color: 'var(--text3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: '13px', transition: 'all 0.15s', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--accent)'; (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--border)'; (e.currentTarget as HTMLElement).style.color = 'var(--text3)' }}
-              >
-                <span style={{ fontSize: '18px' }}>+</span> Sütun Ekle
-              </button>
-            </div>
-
-            <DragOverlay>
-              {activeCard ? (
-                <div style={{ transform: 'scale(1.03)', opacity: 0.9, cursor: 'grabbing', pointerEvents: 'none' }}>
-                  <CardItem card={activeCard} onEdit={() => {}} isDragging />
-                </div>
-              ) : null}
-            </DragOverlay>
-          </DndContext>
-        ) : (
-          // Statik iskelet: sunucu render ile aynı görünür, layout shift olmaz
+      ) : mounted ? (
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCorners}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={handleDragEnd}
+        >
           <div style={{ flex: 1, overflowX: 'auto', padding: '1.5rem', display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
-            {sortedColumns.map(col => (
-              <div key={col.id} style={{ flexShrink: 0, width: '280px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '10px', minHeight: '200px' }}>
-                <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: col.color }} />
-                  <span style={{ fontSize: '13px', fontWeight: 600 }}>{col.title}</span>
-                </div>
-              </div>
-            ))}
+            <SortableContext items={sortedColumns.map(c => c.id)} strategy={horizontalListSortingStrategy}>
+              {sortedColumns.map(col => (
+                <KanbanColumn
+                  key={col.id}
+                  column={col}
+                  cards={cards.filter(c => c.column_id === col.id).sort((a, b) => a.position - b.position)}
+                  onAddCard={() => setCardModal({ open: true, columnId: col.id })}
+                  onEditCard={(cardId) => setCardModal({ open: true, cardId, columnId: col.id })}
+                  onDeleteColumn={() => deleteColumn(col.id)}
+                />
+              ))}
+            </SortableContext>
+
+            <button
+              onClick={() => setColModal(true)}
+              style={{ flexShrink: 0, width: '280px', padding: '12px', background: 'rgba(255,255,255,0.03)', border: '1px dashed var(--border)', borderRadius: '10px', color: 'var(--text3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--accent)'; (e.currentTarget as HTMLElement).style.color = 'var(--accent)' }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = 'var(--border)'; (e.currentTarget as HTMLElement).style.color = 'var(--text3)' }}
+            >
+              <span style={{ fontSize: '18px' }}>+</span> Sütun Ekle
+            </button>
           </div>
-        )
+
+          <DragOverlay>
+            {activeCard ? (
+              <div style={{ transform: 'scale(1.03)', opacity: 0.9, cursor: 'grabbing', pointerEvents: 'none' }}>
+                <CardItem card={activeCard} onEdit={() => {}} isDragging />
+              </div>
+            ) : null}
+          </DragOverlay>
+        </DndContext>
+      ) : (
+        <div style={{ flex: 1, overflowX: 'auto', padding: '1.5rem', display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+          {sortedColumns.map(col => (
+            <div key={col.id} style={{ flexShrink: 0, width: '280px', background: 'var(--bg2)', border: '1px solid var(--border)', borderRadius: '10px', minHeight: '200px' }}>
+              <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: col.color }} />
+                <span style={{ fontSize: '13px', fontWeight: 600 }}>{col.title}</span>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
 
       <CardModal
@@ -390,7 +391,6 @@ export default function KanbanApp({
           {toast}
         </div>
       )}
-
       <style>{`@keyframes fadeIn { from { opacity:0; transform:translateY(8px) } to { opacity:1; transform:translateY(0) } }`}</style>
     </div>
   )
