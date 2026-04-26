@@ -6,7 +6,6 @@ import { createClient } from '@/lib/supabase'
 
 export default function AuthPage() {
   const router = useRouter()
-  const supabase = createClient()
   const [tab, setTab] = useState<'login' | 'register'>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -18,6 +17,7 @@ export default function AuthPage() {
     e.preventDefault()
     setError('')
     setLoading(true)
+    const supabase = createClient()
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     setLoading(false)
     if (error) { setError(error.message); return }
@@ -30,6 +30,7 @@ export default function AuthPage() {
     setError('')
     if (password.length < 6) { setError('Şifre en az 6 karakter olmalı'); return }
     setLoading(true)
+    const supabase = createClient()
     const { error } = await supabase.auth.signUp({
       email,
       password,
@@ -58,7 +59,6 @@ export default function AuthPage() {
         width: '100%',
         maxWidth: '380px',
       }}>
-        {/* Logo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '2rem' }}>
           <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
             <rect width="28" height="28" rx="8" fill="#7c6af7"/>
@@ -69,26 +69,14 @@ export default function AuthPage() {
           <span style={{ fontSize: '20px', fontWeight: 600, letterSpacing: '-0.5px' }}>TaskFlow</span>
         </div>
 
-        {/* Tabs */}
-        <div style={{
-          display: 'flex',
-          background: 'var(--bg3)',
-          borderRadius: '6px',
-          padding: '3px',
-          marginBottom: '1.5rem',
-        }}>
+        <div style={{ display: 'flex', background: 'var(--bg3)', borderRadius: '6px', padding: '3px', marginBottom: '1.5rem' }}>
           {(['login', 'register'] as const).map(t => (
             <button key={t} onClick={() => { setTab(t); setError('') }} style={{
-              flex: 1, padding: '7px',
-              border: 'none',
+              flex: 1, padding: '7px', border: 'none',
               background: tab === t ? 'var(--bg)' : 'none',
               color: tab === t ? 'var(--text)' : 'var(--text3)',
-              cursor: 'pointer',
-              borderRadius: '5px',
-              fontFamily: 'inherit',
-              fontSize: '13px',
-              fontWeight: 500,
-              transition: 'all 0.15s',
+              cursor: 'pointer', borderRadius: '5px', fontFamily: 'inherit',
+              fontSize: '13px', fontWeight: 500,
             }}>
               {t === 'login' ? 'Giriş Yap' : 'Kayıt Ol'}
             </button>
@@ -111,14 +99,9 @@ export default function AuthPage() {
           <button type="submit" disabled={loading} style={{
             width: '100%', padding: '10px',
             background: loading ? 'var(--bg3)' : 'var(--accent)',
-            border: 'none',
-            borderRadius: '6px',
-            color: '#fff',
-            fontFamily: 'inherit',
-            fontSize: '13px',
-            fontWeight: 600,
+            border: 'none', borderRadius: '6px', color: '#fff',
+            fontFamily: 'inherit', fontSize: '13px', fontWeight: 600,
             cursor: loading ? 'not-allowed' : 'pointer',
-            transition: 'all 0.15s',
           }}>
             {loading ? 'Yükleniyor...' : tab === 'login' ? 'Giriş Yap' : 'Hesap Oluştur'}
           </button>
@@ -140,15 +123,9 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function Input({ ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input {...props} style={{
-      width: '100%',
-      background: 'var(--bg3)',
-      border: '1px solid var(--border)',
-      borderRadius: '6px',
-      padding: '9px 12px',
-      color: 'var(--text)',
-      fontFamily: 'inherit',
-      fontSize: '13px',
-      outline: 'none',
+      width: '100%', background: 'var(--bg3)', border: '1px solid var(--border)',
+      borderRadius: '6px', padding: '9px 12px', color: 'var(--text)',
+      fontFamily: 'inherit', fontSize: '13px', outline: 'none',
     }} />
   )
 }
